@@ -1,0 +1,11 @@
+# Node modules
+node_modules/
+
+# WhatsApp Web session
+.wwebjs_auth/
+.wwebjs_cache/
+
+# Logs
+logs/
+*.log
+messages.log
