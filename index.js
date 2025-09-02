@@ -13,7 +13,8 @@
 
 console.log('[INIT] Memulai bot SisKA...');
 
-const { Client, LocalAuth } = require('whatsapp-web.js');
+const { Client, LocalAuth, MessageMedia } = require('whatsapp-web.js');
+const PDFDocument = require('pdfkit');
 const qrcode = require('qrcode-terminal');
 const fs = require('fs');
 const path = require('path');
@@ -76,6 +77,31 @@ function isApprovalNo(text) {
   return t === '2' || t === 'tidak' || t === 'ga' || t === 'gak' || t.includes('tolak') || t.includes('reject');
 }
 
+function calculateDuration(startStr, endStr) {
+  if (!startStr || !endStr || !startStr.includes(':') || !endStr.includes(':')) return 'N/A';
+  try {
+    const [startH, startM] = startStr.split(':').map(Number);
+    const [endH, endM] = endStr.split(':').map(Number);
+
+    const startDate = new Date(0, 0, 0, startH, startM, 0);
+    let endDate = new Date(0, 0, 0, endH, endM, 0);
+
+    // Handle overnight case
+    if (endDate < startDate) {
+      endDate.setDate(endDate.getDate() + 1);
+    }
+
+    const diffMs = endDate - startDate;
+    const diffHours = Math.floor(diffMs / (1000 * 60 * 60));
+    const diffMins = Math.floor((diffMs % (1000 * 60 * 60)) / (1000 * 60));
+
+    return `${diffHours} jam ${diffMins} menit`;
+  } catch (e) {
+    console.error("Error calculating duration:", e);
+    return 'Error';
+  }
+}
+
 function cariPegawaiByWa(waNumberDigits) {
   if (!Array.isArray(dbPegawai)) return null;
   // DB menyimpan nomor seperti 6285xxxx tanpa @c.us
@@ -101,8 +127,83 @@ async function kirimDenganTyping(client, chatId, text) {
   }
 }
 
+async function buatLaporanLemburDenganFoto(data, fotoPaths, chatId, client) {
+  return new Promise((resolve, reject) => {
+    const filePath = path.join(__dirname, 'reports', `Laporan_Lembur_${data.nama}_${data.tanggal}.pdf`);
+    fs.mkdirSync(path.dirname(filePath), { recursive: true });
+    const doc = new PDFDocument();
+    const stream = fs.createWriteStream(filePath);
+    doc.pipe(stream);
+
+    doc.fontSize(14).text('KEMENTERIAN KETENAGAKERJAAN RI', { align: 'center' });
+    doc.text('SEKRETARIAT JENDERAL - BIRO KEUANGAN DAN BMN', { align: 'center' });
+    doc.moveDown();
+
+    doc.fontSize(12).text('LAPORAN LEMBUR', { align: 'center' });
+    doc.moveDown();
+
+    doc.text(`Nama : ${data.nama}`);
+    doc.text(`NIP : ${data.nip}`);
+    doc.text(`Tanggal : ${data.tanggal}`);
+    doc.text(`Jam Mulai : ${data.jamMasuk || 'N/A'}`);
+    doc.text(`Jam Selesai : ${data.jamKeluar || 'N/A'}`);
+    doc.text(`Total Jam Lembur : ${calculateDuration(data.jamMasuk, data.jamKeluar)}`);
+    doc.text(`Uraian Kegiatan : ${data.kegiatan}`);
+    doc.moveDown();
+
+    const addImage = (label, imagePath) => {
+      if (imagePath && fs.existsSync(imagePath)) {
+        doc.text(label, { underline: true });
+        doc.image(imagePath, { fit: [400, 250], align: 'center' });
+        doc.moveDown();
+      }
+    };
+
+    addImage('Foto Hasil Lembur:', fotoPaths[0]);
+    addImage('Foto Pegawai di Tempat Lembur:', fotoPaths[1]);
+    addImage('Screenshot Approval:', fotoPaths[2]);
+
+    doc.text('Mengetahui,');
+    doc.text('Kepala Sub Bagian TU Biro Keuangan dan BMN');
+    doc.moveDown(3);
+    doc.text('ALPHA SANDRO ADITTHYASWARA, S.Sos');
+    doc.text('NIP. 198703232015031002');
+
+    doc.end();
+
+    stream.on('finish', async () => {
+      try {
+        console.log(`[PDF] Berhasil dibuat: ${filePath}`);
+        const media = MessageMedia.fromFilePath(filePath);
+        await client.sendMessage(chatId, media, { caption: "Berikut laporan lembur final Anda 📑✅" });
+        if (data.nomorAtasan) {
+          await client.sendMessage(data.nomorAtasan, media, { caption: `Laporan lembur ${data.nama} sudah dibuat.` });
+        }
+        resolve();
+      } catch (err) {
+        console.error('[PDF] Gagal mengirim PDF:', err);
+        reject(err);
+      }
+    });
+
+    stream.on('error', reject);
+  });
+}
+
 // ====== INIT CLIENT ======
-const client = new Client({ authStrategy: new LocalAuth() });
+const client = new Client({
+  authStrategy: new LocalAuth(),
+  puppeteer: {
+    headless: true,
+    args: [
+      '--no-sandbox',
+      '--disable-setuid-sandbox',
+      '--disable-dev-shm-usage',
+      '--disable-extensions',
+      '--disable-gpu',
+    ],
+  },
+});
 
 client.on('qr', qr => {
   qrcode.generate(qr, { small: true });
@@ -110,19 +211,74 @@ client.on('qr', qr => {
 });
 
 client.on('ready', () => console.log('✅ [READY] Bot SisKA siap Broer! 🚀'));
+
+client.on('authenticated', () => {
+  console.log('[WA] Authenticated!');
+});
+
+client.on('auth_failure', msg => {
+  console.error('[WA] Auth failure:', msg);
+});
+
+client.on('message_create', (msg) => {
+  console.log('[DEBUG] message_create:', msg.from, '| Body:', msg.body);
+});
 client.on('disconnected', reason => console.log(`[WA] Bot disconnect: ${reason}`));
 
 // ====== MESSAGE HANDLER ======
 client.on('message', async (message) => {
+  console.log('[DEBUG] Pesan diterima:', message.from, '| Body:', message.body, '| hasMedia:', message.hasMedia);
   try {
     const chatId = message.from; // bisa @c.us atau @g.us
     const isGroup = chatId.endsWith('@g.us');
     const digits = hanyaAngka(chatId);
+    const pegawai = cariPegawaiByWa(digits);
 
+    const flow = pengajuanBySender[chatId];
     logIn(chatId, message.body);
+
+    // Handle upload foto dokumentasi lembur
+    if (flow?.step === 'upload-foto') {
+      if (message.hasMedia) {
+          console.log('[DEBUG] Proses upload foto lembur untuk', chatId, '| Foto ke-', (flow.fotoList?.length || 0) + 1);
+          const media = await message.downloadMedia();
+          const fotoDir = path.join(__dirname, 'uploads');
+          fs.mkdirSync(fotoDir, { recursive: true });
+          const fotoPath = path.join(fotoDir, `foto_${chatId}_${Date.now()}.jpg`);
+          fs.writeFileSync(fotoPath, media.data, 'base64');
+
+          if (!flow.fotoList) flow.fotoList = [];
+          flow.fotoList.push(fotoPath);
+
+          if (flow.fotoList.length < 3) {
+            await kirimDenganTyping(client, chatId, `Foto ${flow.fotoList.length} sudah diterima ✅. Silakan upload foto ke-${flow.fotoList.length + 1}.`);
+            console.log('[DEBUG] State upload-foto:', { chatId, fotoList: flow.fotoList });
+          } else {
+            await kirimDenganTyping(client, chatId, 'Semua foto sudah diterima, sedang membuat laporan PDF...');
+            const data = {
+              nama: flow.pegawai['Nama Pegawai'],
+              nip: flow.pegawai['NIP'] || '',
+              tanggal: new Date().toISOString().split('T')[0],
+              kegiatan: flow.alasan || '',
+              nomorAtasan: flow.atasan ? (flow.atasan['No. HP (WA) aktif'] + '@c.us') : null,
+              jamMasuk: flow.jamMasuk,
+              jamKeluar: flow.jamKeluar
+            };
+            await buatLaporanLemburDenganFoto(data, flow.fotoList, chatId, client);
+            delete pengajuanBySender[chatId];
+            console.log('[DEBUG] State upload-foto selesai dan dihapus:', chatId);
+          }
+      } else {
+        // Mengabaikan pesan teks/kosong yang mungkin merupakan event duplikat saat upload media
+        console.log('[DEBUG] Pesan teks/kosong diterima saat step upload-foto, diabaikan.');
+      }
+      // Keluar dari handler setelah memproses langkah upload foto
+      return;
+    }
 
     // ----- 0) Handler dari grup (helpdesk & approval via quote) -----
     if (isGroup) {
+      console.log('[DEBUG] Pesan dari grup', chatId);
       // Helpdesk reply oleh tim via quote pada INSTRUKSI
       if (chatId === HELPDESK_GROUP_ID && message.hasQuotedMsg) {
         try {
@@ -151,6 +307,7 @@ client.on('message', async (message) => {
 
     // ----- 1) Handler approval atasan via quote reply -----
     if (message.hasQuotedMsg) {
+      console.log('[DEBUG] Pesan dengan quotedMsg dari', chatId);
       try {
         const quoted = await message.getQuotedMessage();
         const qid = quoted.id._serialized;
@@ -162,11 +319,22 @@ client.on('message', async (message) => {
           if (isApprovalYes(message.body)) {
             let pesanPegawai = `✅ Pengajuan ${jenis} Anda telah *DISETUJUI* oleh atasan.`;
             if (jenis === 'Lembur') {
-              pesanPegawai += `\n\nSilakan lanjutkan isi form laporan hasil lembur di link berikut:\n${FORM_LEMBUR_URL}`;
+              pesanPegawai += `\n\nMohon upload *3 foto* dokumentasi lembur Anda sebagai bukti:\n1. Foto hasil lembur\n2. Foto Anda di tempat lembur\n3. Screenshot approval dari atasan.`;
+              // simpan state upload foto & info pegawai, alasan, atasan
+              pengajuanBySender[pemohonId] = {
+                step: 'upload-foto',
+                pegawai: pengajuan.pegawai,
+                alasan: pengajuan.alasan,
+                atasan: pengajuan.atasan,
+                jamMasuk: pengajuan.jamMasuk,
+                jamKeluar: pengajuan.jamKeluar
+              };
+              console.log('[DEBUG] Set upload-foto state untuk', pemohonId, pengajuanBySender[pemohonId]);
             } else if (jenis === 'Cuti') {
               pesanPegawai += `\n\nSilakan lanjutkan mengisi form pengajuan cuti di link berikut:\n${FORM_CUTI_URL}`;
             }
             await kirimDenganTyping(client, pemohonId, pesanPegawai);
+
             await kirimDenganTyping(client, chatId, `[APPROVAL] ✅ Disetujui untuk ${pengajuan.pegawai['Nama Pegawai']}`);
           } else if (isApprovalNo(message.body)) {
             await kirimDenganTyping(client, pemohonId, `❌ Pengajuan ${jenis} Anda *DITOLAK* oleh atasan.`);
@@ -184,10 +352,10 @@ client.on('message', async (message) => {
     }
 
     // ----- 2) Tentukan internal vs eksternal -----
-    const pegawai = cariPegawaiByWa(digits);
 
     // ========== EKSTERNAL ==========
     if (!pegawai || helpdeskQueue[chatId]) {
+      console.log('[DEBUG] Flow eksternal untuk', chatId);
       if (!helpdeskQueue[chatId]) {
         const welcome =
 `Halo, terima kasih sudah menghubungi Helpdesk Biro Keuangan dan BMN. 🙏\n\n`+
@@ -256,11 +424,13 @@ client.on('message', async (message) => {
 
     // ========== INTERNAL ==========
     // jika belum ada alur atau user mengetik "menu", tampilkan menu utama
+    console.log('[DEBUG] Flow internal untuk', chatId, '| Step:', pengajuanBySender[chatId]?.step);
     const bodyLower = (message.body || '').trim().toLowerCase();
     if (!pengajuanBySender[chatId] || bodyLower === 'menu') {
       if (helpdeskQueue[chatId]) {
         // jika masih ada alur helpdesk, jangan tampilkan menu
       } else {
+        console.log('[DEBUG] User masuk menu utama');
         const menu = `Halo ${pegawai['Nama Pegawai']}! 👋\nAda yang bisa kami bantu hari ini?\n\n`+
           `Silakan pilih menu:\n`+
           `1. Pengajuan Lembur\n`+
@@ -273,19 +443,21 @@ client.on('message', async (message) => {
       }
     }
 
-    const flow = pengajuanBySender[chatId];
     if (flow && flow.step === 'menu') {
       if (bodyLower === '1') {
+        console.log('[DEBUG] User pilih menu lembur');
         await kirimDenganTyping(client, chatId, 'Silakan tuliskan *alasan/tujuan lembur* Anda.');
         pengajuanBySender[chatId] = { ...flow, step: 'alasan-lembur', jenis: 'Lembur' };
         return;
       }
       if (bodyLower === '2') {
+        console.log('[DEBUG] User pilih menu cuti');
         await kirimDenganTyping(client, chatId, 'Silakan tuliskan *alasan pengajuan cuti* Anda.');
         pengajuanBySender[chatId] = { ...flow, step: 'alasan-cuti', jenis: 'Cuti' };
         return;
       }
       if (bodyLower === '3') {
+        console.log('[DEBUG] User pilih menu helpdesk');
         await kirimDenganTyping(client, chatId, 'Silakan tuliskan pertanyaan Anda untuk Helpdesk.');
         // pindah ke helpdesk mode
         helpdeskQueue[chatId] = { step: 'pertanyaan' };
@@ -296,36 +468,91 @@ client.on('message', async (message) => {
       return;
     }
 
-    if (flow && (flow.step === 'alasan-lembur' || flow.step === 'alasan-cuti')) {
+    if (flow && flow.step === 'alasan-cuti') {
       const alasan = message.body.trim();
-      const atasan = cariAtasanPegawai(pegawai);
+      console.log('[DEBUG] Terima alasan cuti', alasan);
+      const atasan = cariAtasanPegawai(flow.pegawai);
+      if (!atasan) {
+        await kirimDenganTyping(client, chatId, 'Maaf, data atasan Anda tidak ditemukan. Hubungi admin.');
+        delete pengajuanBySender[chatId];
+        return;
+      }
+      pengajuanBySender[chatId] = { ...flow, step: 'menunggu-persetujuan', alasan, atasan };
+
+      const nomorAtasan = (atasan['No. HP (WA) aktif'] || '') + '@c.us';
+      const teksAtasan =
+`📢 *Pengajuan Cuti* dari ${flow.pegawai['Nama Pegawai']}\n`+
+`Alasan: ${alasan}\n\n`+
+`*Balas pesan ini (QUOTE REPLY) dengan angka:*\n`+
+`1. Setuju ✅\n2. Tidak Setuju ❌`;
+
+      const sentToAtasan = await client.sendMessage(nomorAtasan, teksAtasan);
+      logOut(nomorAtasan, teksAtasan);
+      pengajuanByAtasanMsgId[sentToAtasan.id._serialized] = {
+        sender: chatId,
+        jenis: flow.jenis,
+        pegawai: flow.pegawai,
+        atasan,
+        alasan
+      };
+      await kirimDenganTyping(client, chatId, `Pengajuan Cuti Anda sudah diteruskan ke atasan untuk persetujuan.`);
+      return;
+    }
+
+    if (flow && flow.step === 'alasan-lembur') {
+      const alasan = message.body.trim();
+      console.log('[DEBUG] Terima alasan lembur:', alasan);
+      pengajuanBySender[chatId].alasan = alasan;
+      pengajuanBySender[chatId].step = 'tanya-jam-masuk';
+      await kirimDenganTyping(client, chatId, 'Baik, sekarang masukkan *jam mulai lembur* Anda (format 24 jam, contoh: 17:00).');
+      return;
+    }
+
+    if (flow && flow.step === 'tanya-jam-masuk') {
+      const jamMasuk = message.body.trim();
+      console.log('[DEBUG] Terima jam masuk:', jamMasuk);
+      pengajuanBySender[chatId].jamMasuk = jamMasuk;
+      pengajuanBySender[chatId].step = 'tanya-jam-keluar';
+      await kirimDenganTyping(client, chatId, 'Oke, terakhir masukkan *jam selesai lembur* Anda (format 24 jam, contoh: 20:00).');
+      return;
+    }
+
+    if (flow && flow.step === 'tanya-jam-keluar') {
+      const jamKeluar = message.body.trim();
+      console.log('[DEBUG] Terima jam keluar:', jamKeluar);
+      pengajuanBySender[chatId].jamKeluar = jamKeluar;
+
+      const atasan = cariAtasanPegawai(flow.pegawai);
       if (!atasan) {
         await kirimDenganTyping(client, chatId, 'Maaf, data atasan Anda tidak ditemukan. Hubungi admin.');
         delete pengajuanBySender[chatId];
         return;
       }
 
-      const jenis = flow.jenis; // 'Lembur' / 'Cuti'
-      pengajuanBySender[chatId] = { ...flow, step: 'menunggu-persetujuan', alasan, atasan };
+      const { alasan, jamMasuk } = flow;
+      pengajuanBySender[chatId] = { ...flow, step: 'menunggu-persetujuan', atasan };
 
       const nomorAtasan = (atasan['No. HP (WA) aktif'] || '') + '@c.us';
       const teksAtasan =
-`📢 *Pengajuan ${jenis}* dari ${pegawai['Nama Pegawai']}\n`+
-`Alasan: ${alasan}\n\n`+
+`📢 *Pengajuan Lembur* dari ${flow.pegawai['Nama Pegawai']}\n`+
+`Alasan: ${alasan}\n`+
+`Jam: ${jamMasuk} - ${jamKeluar}\n\n`+
 `*Balas pesan ini (QUOTE REPLY) dengan angka:*\n`+
 `1. Setuju ✅\n2. Tidak Setuju ❌`;
 
-      // kirim ke atasan dan simpan id pesan untuk approval via quote
       const sentToAtasan = await client.sendMessage(nomorAtasan, teksAtasan);
       logOut(nomorAtasan, teksAtasan);
       pengajuanByAtasanMsgId[sentToAtasan.id._serialized] = {
         sender: chatId,
-        jenis,
-        pegawai,
-        atasan
+        jenis: flow.jenis,
+        pegawai: flow.pegawai,
+        atasan,
+        alasan,
+        jamMasuk,
+        jamKeluar
       };
 
-      await kirimDenganTyping(client, chatId, `Pengajuan ${jenis} Anda sudah diteruskan ke atasan untuk persetujuan.`);
+      await kirimDenganTyping(client, chatId, `Pengajuan Lembur Anda sudah diteruskan ke atasan untuk persetujuan.`);
       return;
     }
 
