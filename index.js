@@ -138,17 +138,30 @@ async function buatLaporanLemburDenganFoto(data, fotoPaths, chatId, client) {
     doc.fontSize(14).text('KEMENTERIAN KETENAGAKERJAAN RI', { align: 'center' });
     doc.text('SEKRETARIAT JENDERAL - BIRO KEUANGAN DAN BMN', { align: 'center' });
     doc.moveDown();
+    doc.fontSize(12).text(
+  'Jl. Gatot Subroto No.Kav 51, RT.5/RW.4, Kuningan Tim., Kecamatan Setiabudi, Kota Jakarta Selatan, DKI Jakarta 12950 (Lantai 3A)',
+  { align: 'center' }
 
+  doc.moveDown(0.5);
+const pageWidth = doc.page.width;      
+const margin = 50;                     
+doc.moveTo(margin, doc.y)              
+   .lineTo(pageWidth - margin, doc.y)  
+   .stroke();                          
+
+  
     doc.fontSize(12).text('LAPORAN LEMBUR', { align: 'center' });
     doc.moveDown();
 
     doc.text(`Nama : ${data.nama}`);
-    doc.text(`NIP : ${data.nip}`);
-    doc.text(`Tanggal : ${data.tanggal}`);
-    doc.text(`Jam Mulai : ${data.jamMasuk || 'N/A'}`);
-    doc.text(`Jam Selesai : ${data.jamKeluar || 'N/A'}`);
-    doc.text(`Total Jam Lembur : ${calculateDuration(data.jamMasuk, data.jamKeluar)}`);
-    doc.text(`Uraian Kegiatan : ${data.kegiatan}`);
+doc.text(`NIP : ${data.nip}`);
+doc.text(`Tanggal : ${data.tanggal}`);
+doc.text(`Nama Atasan : ${data.namaAtasan}`);
+doc.text(`Jabatan Atasan : ${data.jabatanAtasan}`);
+doc.text(`Jam Mulai : ${data.jamMasuk || 'N/A'}`);
+doc.text(`Jam Selesai : ${data.jamKeluar || 'N/A'}`);
+doc.text(`Total Jam Lembur : ${calculateDuration(data.jamMasuk, data.jamKeluar)}`);
+doc.text(`Uraian Kegiatan : ${data.kegiatan}`);
     doc.moveDown();
 // test
     const addImage = (label, imagePath) => {
