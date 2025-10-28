@@ -150,7 +150,7 @@ async function buatLaporanLemburDenganFoto(data, fotoPaths, chatId, client) {
     doc.text(`Total Jam Lembur : ${calculateDuration(data.jamMasuk, data.jamKeluar)}`);
     doc.text(`Uraian Kegiatan : ${data.kegiatan}`);
     doc.moveDown();
-
+// test
     const addImage = (label, imagePath) => {
       if (imagePath && fs.existsSync(imagePath)) {
         doc.text(label, { underline: true });
