@@ -140,9 +140,9 @@ async function buatLaporanLemburDenganFoto(data, fotoPaths, chatId, client) {
     doc.moveDown();
     doc.fontSize(12).text(
   'Jl. Gatot Subroto No.Kav 51, RT.5/RW.4, Kuningan Tim., Kecamatan Setiabudi, Kota Jakarta Selatan, DKI Jakarta 12950 (Lantai 3A)',
-  { align: 'center' }
+  { align: 'center' });//
 
-  doc.moveDown(0.5);
+doc.moveDown(0.5);
 const pageWidth = doc.page.width;      
 const margin = 50;                     
 doc.moveTo(margin, doc.y)              
